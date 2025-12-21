@@ -8,59 +8,71 @@
     pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
     uv2nix.url = "github:pyproject-nix/uv2nix";
     pyproject-build-systems.url = "github:pyproject-nix/build-system-pkgs";
+
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    inputs@{
-      self,
-      nixpkgs,
-      flake-utils,
-      ...
+    inputs@{ self
+    , nixpkgs
+    , flake-utils
+    , ...
     }:
     let
       systems = builtins.attrNames nixpkgs.legacyPackages;
 
       plot-overlay = import ./nix/overlay.nix { inherit inputs; };
     in
-    flake-utils.lib.eachSystem systems (
-      system:
-      let
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [ plot-overlay ];
-          config.allowUnfree = true;
-        };
-        shell = pkgs.mkShell {
-          venvDir = ".venv";
-          packages = with pkgs; [
-            uv
-          ];
+    flake-utils.lib.eachSystem systems
+      (
+        system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ plot-overlay ];
+            config.allowUnfree = true;
+          };
+          pre-commit-check = inputs.git-hooks.lib.${system}.run {
+            src = ./.;
+            hooks.nixpkgs-fmt.enable = true;
+          };
+          shell = pkgs.mkShell {
+            venvDir = ".venv";
+            packages = with pkgs; [
+              uv
+            ] ++ pre-commit-check.enabledPackages;
 
-          shellHook = ''
-            export UV_PYTHON=${pkgs.python313}/bin/python
-            venvDir=.venv
-            if [ ! -d "$venvDir" ]; then
-              uv venv .venv
-              echo "Created virtual environment in $venvDir"
-            fi
-            source $venvDir/bin/activate
-          '';
-        };
-      in
-      {
-        packages = rec {
-          default = plot;
-          plot = pkgs.plot;
-        };
+            shellHook = ''
+              ${pre-commit-check.shellHook}
+              export UV_PYTHON=${pkgs.python313}/bin/python
+              venvDir=.venv
+              if [ ! -d "$venvDir" ]; then
+                uv venv .venv
+                echo "Created virtual environment in $venvDir"
+              fi
+              source $venvDir/bin/activate
+            '';
+          };
+        in
+        {
+          checks.pre-commit-check = pre-commit-check;
 
-        apps.default = {
-          type = "app";
-          program = "${pkgs.plot}/bin/plot";
-        };
+          packages = rec {
+            default = plot;
+            plot = pkgs.plot;
+          };
 
-        devShells.default = shell;
-      }
-    )
+          apps.default = {
+            type = "app";
+            program = "${pkgs.plot}/bin/plot";
+          };
+
+          devShells.default = shell;
+        }
+      )
     // {
       overlays.default = plot-overlay;
     };
